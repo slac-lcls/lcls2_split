@@ -71,6 +71,36 @@ if [ $force_clean == 1 ]; then
     fi
 fi
 
+function has_git_changes() {
+    local submodule_dir=$1
+    if [ ! -d "$submodule_dir" ]; then
+        return 1
+    fi
+    
+    cd "$submodule_dir"
+    
+    # Check for unstaged changes
+    if ! git diff --quiet 2>/dev/null; then
+        cd - > /dev/null
+        return 0
+    fi
+    
+    # Check for staged changes
+    if ! git diff --cached --quiet 2>/dev/null; then
+        cd - > /dev/null
+        return 0
+    fi
+    
+    # Check for untracked files
+    if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+        cd - > /dev/null
+        return 0
+    fi
+    
+    cd - > /dev/null
+    return 1
+}
+
 function cmake_build() {
     cd $1
     shift
@@ -92,6 +122,14 @@ fi
 
 cmake_build xtcdata
 
+# Check if xtcdata has changes and force clean rebuild of psalg if needed
+if has_git_changes "xtcdata"; then
+    echo "xtcdata has uncommitted changes, forcing clean rebuild of psalg"
+    if [ -d "psalg/build" ]; then
+        rm -rf "psalg/build"
+    fi
+fi
+
 if [ $no_shmem == 0 ]; then
     cmake_build psalg
 else
@@ -102,6 +140,14 @@ pip install --no-deps --prefix=$INSTDIR $pipOptions .
 cd ..
 
 if [ $no_daq == 0 ]; then
+    # Check if xtcdata has changes and force clean rebuild of psdaq if needed
+    if has_git_changes "xtcdata"; then
+        echo "xtcdata has uncommitted changes, forcing clean rebuild of psdaq"
+        if [ -d "psdaq/build" ]; then
+            rm -rf "psdaq/build"
+        fi
+    fi
+    
     # to build psdaq with setuptools
     cmake_build psdaq
     cd psdaq
@@ -121,7 +167,15 @@ if [ $no_ana == 0 ]; then
     # force build of the extensions.  do this because in some cases
     # setup.py is unable to detect if an external header file changed
     # (e.g. in xtcdata).  but in many cases it is fine without "-f" - cpo
-    if [ $pyInstallStyle == "develop" ]; then
+    
+    # Check if xtcdata has changes and force build_ext if needed
+    force_build_ext=0
+    if has_git_changes "../xtcdata"; then
+        echo "xtcdata has uncommitted changes, forcing build_ext for psana"
+        force_build_ext=1
+    fi
+    
+    if [ $pyInstallStyle == "develop" ] || [ $force_build_ext == 1 ]; then
         python setup.py build_ext -f --inplace
     fi
     pip install --no-deps --prefix=$INSTDIR $pipOptions .
