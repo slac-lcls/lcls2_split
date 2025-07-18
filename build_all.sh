@@ -71,6 +71,58 @@ if [ $force_clean == 1 ]; then
     fi
 fi
 
+function calculate_working_tree_hash() {
+    local target_dir="$1"
+    if [ ! -d "$target_dir" ]; then
+        echo ""
+        return
+    fi
+    
+    cd "$target_dir"
+    {   git diff-index --name-only HEAD 2>/dev/null || true
+        git ls-files -o --exclude-standard 2>/dev/null || true
+    } | while read path; do
+        if [ -n "$path" ]; then
+            if [ -f "$path" ]; then
+                printf "100644 blob %s\t$path\n" $(git hash-object -w "$path" 2>/dev/null || echo "0000000000000000000000000000000000000000")
+            elif [ -d "$path" ]; then
+                printf "160000 commit %s\t$path\n" $(cd "$path" 2>/dev/null && git rev-parse HEAD 2>/dev/null || echo "0000000000000000000000000000000000000000")
+            fi
+        fi
+    done | sed 's,/,\\,g' | git mktree --missing 2>/dev/null || echo "no_changes"
+    cd - > /dev/null
+}
+
+function get_stored_hash() {
+    local component="$1"
+    local hash_file="$INSTDIR/.build_hashes/${component}.hash"
+    if [ -f "$hash_file" ]; then
+        cat "$hash_file"
+    else
+        echo ""
+    fi
+}
+
+function store_hash() {
+    local component="$1"
+    local hash="$2"
+    local hash_dir="$INSTDIR/.build_hashes"
+    mkdir -p "$hash_dir"
+    echo "$hash" > "$hash_dir/${component}.hash"
+}
+
+function has_component_changed() {
+    local component="$1"
+    local current_hash=$(calculate_working_tree_hash "$component")
+    local stored_hash=$(get_stored_hash "$component")
+    
+    if [ "$current_hash" != "$stored_hash" ] || [ -z "$stored_hash" ]; then
+        return 0  # Component has changed
+    else
+        return 1  # Component has not changed
+    fi
+}
+
 function cmake_build() {
     cd $1
     shift
@@ -90,18 +142,64 @@ else
     pipOptions=""
 fi
 
-cmake_build xtcdata
+# Check for dependency changes (force_clean overrides dependency checking)
+xtcdata_changed=1
+psalg_changed=1
+dependencies_changed=1
 
-if [ $no_shmem == 0 ]; then
-    cmake_build psalg
+if [ $force_clean == 0 ]; then
+    if has_component_changed "xtcdata"; then
+        xtcdata_changed=1
+        echo "xtcdata has changed, will rebuild"
+    else
+        xtcdata_changed=0
+        echo "xtcdata unchanged, skipping rebuild"
+    fi
+    
+    if has_component_changed "psalg"; then
+        psalg_changed=1
+        echo "psalg has changed, will rebuild"
+    else
+        psalg_changed=0
+        echo "psalg unchanged"
+    fi
+    
+    # Dependencies changed if either xtcdata or psalg changed
+    if [ $xtcdata_changed == 1 ] || [ $psalg_changed == 1 ]; then
+        dependencies_changed=1
+        echo "Dependencies (xtcdata/psalg) have changed, will rebuild dependent components"
+    else
+        dependencies_changed=0
+        echo "Dependencies (xtcdata/psalg) unchanged, skipping dependent component rebuilds"
+    fi
 else
-    cmake_build psalg -DBUILD_SHMEM=OFF
+    echo "Force clean enabled, will rebuild all components"
 fi
-cd psalg
-pip install --no-deps --prefix=$INSTDIR $pipOptions .
-cd ..
 
-if [ $no_daq == 0 ]; then
+# Build xtcdata (always build if changed or force_clean)
+if [ $xtcdata_changed == 1 ]; then
+    echo "Building xtcdata..."
+    cmake_build xtcdata
+    store_hash "xtcdata" "$(calculate_working_tree_hash "xtcdata")"
+fi
+
+# Build psalg (build if xtcdata or psalg changed)
+if [ $xtcdata_changed == 1 ] || [ $psalg_changed == 1 ]; then
+    echo "Building psalg..."
+    if [ $no_shmem == 0 ]; then
+        cmake_build psalg
+    else
+        cmake_build psalg -DBUILD_SHMEM=OFF
+    fi
+    cd psalg
+    pip install --no-deps --prefix=$INSTDIR $pipOptions .
+    cd ..
+    store_hash "psalg" "$(calculate_working_tree_hash "psalg")"
+fi
+
+# Build psdaq (build if dependencies changed)
+if [ $no_daq == 0 ] && [ $dependencies_changed == 1 ]; then
+    echo "Building psdaq..."
     # to build psdaq with setuptools
     cmake_build psdaq
     cd psdaq
@@ -113,9 +211,13 @@ if [ $no_daq == 0 ]; then
     fi
     pip install --no-deps --prefix=$INSTDIR $pipOptions .
     cd ..
+elif [ $no_daq == 0 ]; then
+    echo "Skipping psdaq build (dependencies unchanged)"
 fi
 
-if [ $no_ana == 0 ]; then
+# Build psana (build if dependencies changed)  
+if [ $no_ana == 0 ] && [ $dependencies_changed == 1 ]; then
+    echo "Building psana..."
     # to build psana with setuptools
     cd psana
     # force build of the extensions.  do this because in some cases
@@ -125,6 +227,8 @@ if [ $no_ana == 0 ]; then
         python setup.py build_ext -f --inplace
     fi
     pip install --no-deps --prefix=$INSTDIR $pipOptions .
+elif [ $no_ana == 0 ]; then
+    echo "Skipping psana build (dependencies unchanged)"
 fi
 # The removal of site.py in setup 49.0.0 breaks "develop" installations
 # which are outside the normal system directories: /usr, /usr/local,
