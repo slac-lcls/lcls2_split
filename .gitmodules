@@ -2,19 +2,19 @@
 	path = xtcdata
 	url = https://github.com/slac-lcls/xtcdata
 	branch = develop
-	update = rebase
+	update = checkout
 [submodule "psalg"]
 	path = psalg
 	url = https://github.com/slac-lcls/psalg
 	branch = develop
-	update = rebase
+	update = checkout
 [submodule "psana"]
 	path = psana
 	url = https://github.com/slac-lcls/psana
 	branch = develop
-	update = rebase
+	update = checkout
 [submodule "psdaq"]
 	path = psdaq
 	url = https://github.com/slac-lcls/psdaq
 	branch = develop
-	update = rebase
+	update = checkout
